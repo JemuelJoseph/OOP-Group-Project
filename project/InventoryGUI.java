@@ -3,11 +3,32 @@ package project;
 //AI USE on line 213 (Prompt: "How to ensure a string contains only characters or a single quote in Java")
 import javax.swing.*;
 import java.awt.*;
+import javax.swing.table.DefaultTableModel;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 public class InventoryGUI extends JFrame {
 
     private JTabbedPane tabbedPane;
     private boolean isNewItem = false;
+     private DefaultListModel<Item> itemListModel;
+    private JList<Item> itemList;
+
+    // SALES TAB FIELDS
+    private JComboBox<Item> cbSaleItems;
+    private JTextField txtSaleQty;
+    private JButton btnSaleAdd;
+    private JButton btnSaleRemove;
+    private JButton btnSaleComplete;
+
+    private JTable tblSaleLines;
+    private DefaultTableModel saleTableModel;
+    private JTextField txtSaleTotal;
+
+    // Sales data
+    private ArrayList<SaleItem> currentSaleItems = new ArrayList<>();
+    private ArrayList<Sale> completedSales = new ArrayList<>();
 
     public InventoryGUI() {
 
@@ -535,25 +556,254 @@ public class InventoryGUI extends JFrame {
         return panel;
     }
 
-    // SALES
+     // SALES TAB
     private JPanel createSalesPanel() {
-        JPanel panel = new JPanel();
-        panel.setLayout(new BorderLayout());
+        JPanel panel = new JPanel(new BorderLayout());
 
-        JLabel label = new JLabel("Sales Entry System", SwingConstants.CENTER);
-        label.setFont(new Font("Arial", Font.BOLD, 20));
+        // Top controls: item selection + quantity + buttons
+        JPanel topPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
 
-        panel.add(label, BorderLayout.NORTH);
+        cbSaleItems = new JComboBox<>();
+        reloadSalesComboBox(); // load items from inventory list
 
-        JTextArea info = new JTextArea("This tab will allow:\n"
-                + "- Entering Sale Items\n"
-                + "- Generating Invoice Number\n"
-                + "- Displaying Total\n");
-        info.setEditable(false);
+        txtSaleQty = new JTextField(5);
 
-        panel.add(info, BorderLayout.CENTER);
+        btnSaleAdd = new JButton("Add");
+        btnSaleRemove = new JButton("Remove");
+        btnSaleComplete = new JButton("Complete Sale");
+
+        JButton btnRefreshItems = new JButton("Refresh Items");
+
+        topPanel.add(new JLabel("Item:"));
+        topPanel.add(cbSaleItems);
+        topPanel.add(new JLabel("Quantity:"));
+        topPanel.add(txtSaleQty);
+        topPanel.add(btnSaleAdd);
+        topPanel.add(btnSaleRemove);
+        topPanel.add(btnSaleComplete);
+        topPanel.add(btnRefreshItems);
+
+        // Table for sale line items
+        String[] cols = {"Inventory #", "Item Name", "Quantity", "Unit Price", "Line Total"};
+        saleTableModel = new DefaultTableModel(cols, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false; // don't allow manual edits
+            }
+        };
+        tblSaleLines = new JTable(saleTableModel);
+        JScrollPane tableScroll = new JScrollPane(tblSaleLines);
+
+        // Bottom: total
+        JPanel bottomPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        bottomPanel.add(new JLabel("Sale Total:"));
+        txtSaleTotal = new JTextField(10);
+        txtSaleTotal.setEditable(false);
+        bottomPanel.add(txtSaleTotal);
+
+        panel.add(topPanel, BorderLayout.NORTH);
+        panel.add(tableScroll, BorderLayout.CENTER);
+        panel.add(bottomPanel, BorderLayout.SOUTH);
+
+        // Listeners 
+
+        btnRefreshItems.addActionListener(e -> reloadSalesComboBox());
+
+        btnSaleAdd.addActionListener(e -> {
+            try {
+                handleAddSaleItem();
+            } catch (InvalidEntryException | NotEnoughStockException ex) {
+                JOptionPane.showMessageDialog(
+                        this,
+                        ex.getMessage(),
+                        "Error",
+                        JOptionPane.ERROR_MESSAGE
+                );
+            } catch (NumberFormatException nfe) {
+                JOptionPane.showMessageDialog(
+                        this,
+                        "Please enter a valid numeric quantity.",
+                        "Invalid Quantity",
+                        JOptionPane.ERROR_MESSAGE
+                );
+            }
+        });
+
+        btnSaleRemove.addActionListener(e -> handleRemoveSaleItem());
+
+        btnSaleComplete.addActionListener(e -> {
+            try {
+                handleCompleteSale();
+            } catch (NotEnoughStockException ex) {
+                JOptionPane.showMessageDialog(
+                        this,
+                        ex.getMessage(),
+                        "Not Enough Stock",
+                        JOptionPane.ERROR_MESSAGE
+                );
+            }
+        });
 
         return panel;
+    }
+
+    // Load items from the inventory JList into the sales combo box
+    private void reloadSalesComboBox() {
+        if (cbSaleItems == null) return;
+        cbSaleItems.removeAllItems();
+        if (itemListModel == null) return;
+
+        for (int i = 0; i < itemListModel.size(); i++) {
+            cbSaleItems.addItem(itemListModel.get(i));
+        }
+    }
+
+    private void handleAddSaleItem() throws InvalidEntryException, NotEnoughStockException {
+        Item selectedItem = (Item) cbSaleItems.getSelectedItem();
+        if (selectedItem == null) {
+            throw new InvalidEntryException("No item selected.");
+        }
+
+        String qtyText = txtSaleQty.getText().trim();
+        if (qtyText.isEmpty()) {
+            throw new InvalidEntryException("Quantity cannot be empty.");
+        }
+
+        int quantity = Integer.parseInt(qtyText);
+        if (quantity <= 0) {
+            throw new InvalidEntryException("Quantity must be a positive number.");
+        }
+
+        // check stock before adding
+        if (quantity > selectedItem.getAmtInStock()) {
+            throw new NotEnoughStockException("Not enough stock for this sale.");
+        }
+
+        double unitPrice = selectedItem.calculatePrice();
+        double lineTotal = unitPrice * quantity;
+
+        // add to table
+        saleTableModel.addRow(new Object[]{
+                selectedItem.getInventoryNum(),
+                selectedItem.getName(),
+                quantity,
+                unitPrice,
+                lineTotal
+        });
+
+        // add to current sale structure
+        SaleItem saleItem = new SaleItem(selectedItem.getInventoryNum(), selectedItem.getName(), unitPrice, quantity);
+        currentSaleItems.add(saleItem);
+
+        recalculateSaleTotal();
+        txtSaleQty.setText("");
+    }
+
+    private void handleRemoveSaleItem() {
+        int row = tblSaleLines.getSelectedRow();
+        if (row == -1) {
+            JOptionPane.showMessageDialog(this, "Please select a line item to remove.", "No Selection", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        if (row >= 0 && row < currentSaleItems.size()) {
+            currentSaleItems.remove(row);
+        }
+        saleTableModel.removeRow(row);
+        recalculateSaleTotal();
+    }
+
+    private void handleCompleteSale() throws NotEnoughStockException {
+        if (currentSaleItems.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "There are no line items in this sale.", "Empty Sale", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        // combine quantities per item
+        Map<Long, Integer> qtyPerItem = new HashMap<>();
+        for (SaleItem si : currentSaleItems) {
+            long inv = si.getInventoryNum();
+            int q = (int) si.getQuantity();
+            qtyPerItem.put(inv, qtyPerItem.getOrDefault(inv, 0) + q);
+        }
+
+        // final stock check
+        for (Map.Entry<Long, Integer> entry : qtyPerItem.entrySet()) {
+            long invNum = entry.getKey();
+            int needed = entry.getValue();
+
+            Item item = findItemByInventoryNum(invNum);
+            if (item == null) continue;
+            if (needed > item.getAmtInStock()) {
+                throw new NotEnoughStockException("Not enough stock to complete sale for item: " + item.getName());
+            }
+        }
+
+        // deplete stock using Item.depleteStock()
+        for (Map.Entry<Long, Integer> entry : qtyPerItem.entrySet()) {
+            long invNum = entry.getKey();
+            int needed = entry.getValue();
+
+            Item item = findItemByInventoryNum(invNum);
+            if (item != null) {
+                item.depleteStock(needed);
+            }
+        }
+
+        // create Sale object and store in history
+        ArrayList<SaleItem> copy = new ArrayList<>(currentSaleItems);
+        Sale sale = new Sale(copy);
+        completedSales.add(sale);
+
+        JOptionPane.showMessageDialog(this, "Sale completed.\nInvoice: " + sale.getInvoiceNumber() + "\nTotal: $" + String.format("%.2f", sale.calculateTotal()), "Sale Completed", JOptionPane.INFORMATION_MESSAGE);
+
+        // clear sale
+        currentSaleItems.clear();
+        saleTableModel.setRowCount(0);
+        txtSaleTotal.setText("");
+        txtSaleQty.setText("");
+
+        // refresh inventory list display (stock changed text)
+        if (itemList != null) {
+            itemList.repaint();
+        }
+    }
+
+    private void recalculateSaleTotal() {
+        double total = 0.0;
+        for (int i = 0; i < saleTableModel.getRowCount(); i++) {
+            Object val = saleTableModel.getValueAt(i, 4); // Line Total column
+            if (val instanceof Number) {
+                total += ((Number) val).doubleValue();
+            } else {
+                try {
+                    total += Double.parseDouble(val.toString());
+                } catch (NumberFormatException ignored) {}
+            }
+        }
+        txtSaleTotal.setText(String.format("%.2f", total));
+    }
+
+    private Item findItemByInventoryNum(long invNum) {
+        if (itemListModel == null) return null;
+        for (int i = 0; i < itemListModel.size(); i++) {
+            Item it = itemListModel.get(i);
+            if (it.getInventoryNum() == invNum) return it;
+        }
+        return null;
+    }
+
+    // checked exceptions for the assignment
+    static class NotEnoughStockException extends Exception {
+        public NotEnoughStockException(String msg) {
+            super(msg);
+        }
+    }
+
+    static class InvalidEntryException extends Exception {
+        public InvalidEntryException(String msg) {
+            super(msg);
+        }
     }
 
     public static void main(String[] args) {
